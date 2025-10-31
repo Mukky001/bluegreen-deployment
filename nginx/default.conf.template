@@ -1,0 +1,59 @@
+# Custom log format to capture pool, release, status, and timing
+log_format detailed '$remote_addr - "$request" $status '
+                   'pool=$upstream_http_x_app_pool '
+                   'release=$upstream_http_x_release_id '
+                   'upstream_status=$upstream_status '
+                   'upstream=$upstream_addr '
+                   'request_time=$request_time '
+                   'upstream_time=$upstream_response_time';
+
+upstream backend {
+    # Uses variables from .env to set primary and backup
+    server app_${ACTIVE_POOL}:3000 max_fails=1 fail_timeout=5s;
+    server app_${BACKUP_POOL}:3000 backup max_fails=1 fail_timeout=5s;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    # Use our custom log format
+    access_log /var/log/nginx/access.log detailed;
+    error_log /var/log/nginx/error.log;
+
+    proxy_connect_timeout 2s;
+    proxy_send_timeout 2s;
+    proxy_read_timeout 2s;
+    
+    proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+    proxy_next_upstream_tries 2;
+    proxy_next_upstream_timeout 5s;
+
+    location / {
+        # --- THIS IS THE CRITICAL PART YOU ARE MISSING ---
+        
+        # 1. Set variables based on the active pool
+        set $pool ${ACTIVE_POOL};
+        set $release_id ${RELEASE_ID_BLUE};
+        if ($pool = "green") {
+            set $release_id ${RELEASE_ID_GREEN};
+        }
+        
+        # 2. Set the headers so the log_format can read them
+        proxy_set_header X-App-Pool $pool;
+        proxy_set_header X-Release-Id $release_id;
+        
+        # --- END OF CRITICAL PART ---
+
+        proxy_pass http://backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Health check endpoint for Nginx itself
+    location /health {
+        return 200 "OK";
+    }
+}
